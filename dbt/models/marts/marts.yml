@@ -1,0 +1,70 @@
+version: 2
+
+models:
+  - name: fct_station_day
+    description: Incremental station-day fact; each run re-merges the lookback window.
+    tests:
+      - unique_combination:
+          arguments:
+            combination: [station_id, obs_date]
+    columns:
+      - name: station_id
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_station')
+                field: station_id
+      - name: obs_date
+        tests: [not_null]
+      - name: diurnal_range_c
+        tests:
+          - accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 60
+
+  - name: dim_station
+    description: SCD Type 2 station dimension. valid_to is null on the current version.
+    tests:
+      - unique_combination:
+          arguments:
+            combination: [station_id, valid_from]
+      - current_version_is_unique
+    columns:
+      - name: station_version_key
+        tests: [not_null, unique]
+      - name: station_id
+        tests: [not_null]
+      - name: is_current
+        tests: [not_null]
+
+  - name: mart_daily_state_summary
+    tests:
+      - unique_combination:
+          arguments:
+            combination: [state, obs_date]
+    columns:
+      - name: reporting_stations
+        tests:
+          - accepted_range:
+              arguments:
+                min_value: 1
+                max_value: 100000
+
+  - name: mart_florida_weather
+    tests:
+      - unique_combination:
+          arguments:
+            combination: [station_id, obs_date]
+
+  - name: mart_station_coverage
+    columns:
+      - name: station_id
+        tests: [not_null, unique]
+      - name: days_reported
+        tests:
+          - accepted_range:
+              arguments:
+                min_value: 1
+                max_value: 100000

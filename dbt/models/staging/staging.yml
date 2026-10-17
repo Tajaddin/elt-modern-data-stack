@@ -1,0 +1,45 @@
+version: 2
+
+models:
+  - name: stg_ghcn__observations
+    description: One row per station, date and element, latest version, values converted to SI units.
+    tests:
+      - unique_combination:
+          arguments:
+            combination: [station_id, obs_date, element]
+    columns:
+      - name: station_id
+        tests: [not_null]
+      - name: obs_date
+        tests: [not_null]
+      - name: element
+        tests: [not_null]
+      - name: value
+        description: Converted value; degrees C for temperatures, mm for precipitation and snow, m/s for wind.
+      - name: unit
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['degC', 'mm', 'm/s', 'raw']
+      - name: failed_quality_check
+        description: True when NOAA attached a quality flag; marts exclude these rows.
+
+  - name: stg_ghcn__stations
+    description: Latest station metadata per station.
+    columns:
+      - name: station_id
+        tests: [not_null, unique]
+      - name: latitude
+        tests:
+          - accepted_range:
+              arguments:
+                min_value: -90
+                max_value: 90
+      - name: longitude
+        tests:
+          - accepted_range:
+              arguments:
+                min_value: -180
+                max_value: 180
+      - name: country_code
+        tests: [not_null]

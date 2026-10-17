@@ -1,0 +1,34 @@
+version: 2
+
+models:
+  - name: int_station_day
+    description: One row per station and day with the common elements pivoted to columns; quality-flagged rows excluded.
+    tests:
+      - unique_combination:
+          arguments:
+            combination: [station_id, obs_date]
+    columns:
+      - name: tmax_c
+        tests:
+          - accepted_range:
+              arguments:
+                min_value: -70
+                max_value: 60
+      - name: tmin_c
+        tests:
+          - accepted_range:
+              arguments:
+                min_value: -80
+                max_value: 50
+      - name: prcp_mm
+        tests:
+          - accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1000
+      - name: snow_mm
+        tests:
+          - accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 2000

@@ -67,8 +67,17 @@ def run_extract(settings: Settings, run_date: date) -> ex.ExtractResult:
 def run_load(settings: Settings, run_date: date, parquet_path: Path) -> tuple[int, float]:
     settings.duckdb_path.parent.mkdir(parents=True, exist_ok=True)
     con = ex.connect(settings.s3_region, settings.duckdb_path)
+    window = lookback_window(run_date, settings.lookback_days, settings.start_date)
     t0 = time.perf_counter()
     rows = ld.load_observations(con, parquet_path, _run_id(run_date))
+    ld.record_load_run(
+        con,
+        run_id=_run_id(run_date),
+        run_date=run_date,
+        window_start=window.start,
+        window_end=window.end,
+        rows_loaded=rows,
+    )
     seconds = round(time.perf_counter() - t0, 2)
     log.info("load.done", run_date=str(run_date), rows=rows, seconds=seconds, db=str(settings.duckdb_path))
     return rows, seconds

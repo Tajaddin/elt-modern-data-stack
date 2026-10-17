@@ -7,7 +7,7 @@ Deduplication across runs (NOAA revises recent days) is dbt's job in staging.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import duckdb
@@ -42,7 +42,34 @@ CREATE TABLE IF NOT EXISTS raw.ghcn_stations (
     run_id       VARCHAR NOT NULL,
     loaded_at    TIMESTAMP NOT NULL
 );
+CREATE TABLE IF NOT EXISTS raw.load_runs (
+    run_id        VARCHAR NOT NULL,
+    run_date      DATE    NOT NULL,
+    window_start  DATE    NOT NULL,
+    window_end    DATE    NOT NULL,
+    rows_loaded   BIGINT  NOT NULL,
+    loaded_at     TIMESTAMP NOT NULL
+);
 """
+
+
+def record_load_run(
+    con: duckdb.DuckDBPyConnection,
+    *,
+    run_id: str,
+    run_date: date,
+    window_start: date,
+    window_end: date,
+    rows_loaded: int,
+) -> None:
+    """One row per run for the warehouse-side volume-drift test; rerunning a run_id replaces its row."""
+    ensure_raw_schema(con)
+    loaded_at = datetime.now(UTC).replace(tzinfo=None)
+    con.execute("DELETE FROM raw.load_runs WHERE run_id = ?", [run_id])
+    con.execute(
+        "INSERT INTO raw.load_runs VALUES (?, ?, ?, ?, ?, ?)",
+        [run_id, run_date, window_start, window_end, rows_loaded, loaded_at],
+    )
 
 
 def ensure_raw_schema(con: duckdb.DuckDBPyConnection) -> None:

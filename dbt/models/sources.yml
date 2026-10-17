@@ -1,0 +1,37 @@
+version: 2
+
+sources:
+  - name: raw
+    description: Append-only landing tables written by the Python loader. One row per run per record; staging keeps the latest.
+    schema: raw
+    loaded_at_field: loaded_at
+    freshness:
+      warn_after: { count: 30, period: hour }
+      error_after: { count: 72, period: hour }
+    tables:
+      - name: ghcn_observations
+        description: GHCN-Daily observations in NOAA's units (tenths of a degree C, tenths of a millimetre) for the configured station prefix.
+        columns:
+          - name: station_id
+            tests: [not_null]
+          - name: obs_date
+            tests: [not_null]
+          - name: element
+            tests: [not_null]
+          - name: run_id
+            tests: [not_null]
+          - name: loaded_at
+            tests: [not_null]
+      - name: ghcn_stations
+        description: Snapshot of ghcnd-stations.txt taken by each run.
+        columns:
+          - name: station_id
+            tests: [not_null]
+          - name: run_id
+            tests: [not_null]
+      - name: load_runs
+        description: One row per load run, written by the loader; used for the volume-drift test.
+        loaded_at_field: loaded_at
+        columns:
+          - name: run_id
+            tests: [not_null, unique]

@@ -1,0 +1,43 @@
+name: ghcn_warehouse
+version: "0.1.0"
+config-version: 2
+profile: ghcn_warehouse
+
+model-paths: ["models"]
+test-paths: ["tests"]
+snapshot-paths: ["snapshots"]
+macro-paths: ["macros"]
+seed-paths: ["seeds"]
+analysis-paths: ["analyses"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+vars:
+  # Days re-merged on every incremental run; matches GHCN_LOOKBACK_DAYS in the extractor.
+  lookback_days: 14
+  # Volume drift test: the latest run's row count must be within this factor of the median of previous runs.
+  volume_band_factor: 3
+
+models:
+  ghcn_warehouse:
+    +persist_docs:
+      relation: true
+      columns: true
+    staging:
+      +materialized: view
+      +schema: staging
+    intermediate:
+      +materialized: view
+      +schema: intermediate
+    marts:
+      +materialized: table
+      +schema: marts
+
+snapshots:
+  ghcn_warehouse:
+    +schema: snapshots
+
+tests:
+  ghcn_warehouse:
+    +store_failures: true
+    +schema: dbt_test_failures
