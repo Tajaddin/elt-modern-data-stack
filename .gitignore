@@ -1,0 +1,42 @@
+# data and local warehouse
+data/
+*.duckdb
+*.duckdb.wal
+
+# python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+dist/
+build/
+*.egg-info/
+
+# dbt
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+logs/
+
+# airflow (local compose state)
+airflow/logs/
+airflow/plugins/__pycache__/
+
+# secrets and local config
+.env
+*.pem
+*.tfvars
+!*.tfvars.example
+.terraform/
+terraform.tfstate*
+
+# editors and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
