@@ -8,11 +8,11 @@ authors = [{ name = "Tajaddin Gafarov", email = "gafarovtajaddin@gmail.com" }]
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "duckdb>=1.5,<2",
-    "pyarrow>=21,<23",
+    "pyarrow>=21,<27",
     "httpx>=0.28,<1",
     "pydantic>=2.11,<3",
     "pydantic-settings>=2.10,<3",
-    "structlog>=25.4,<26",
+    "structlog>=25.4,<27",
     "typer>=0.17,<1",
     "opentelemetry-sdk>=1.36,<2",
     "opentelemetry-exporter-otlp-proto-http>=1.36,<2",
@@ -24,10 +24,10 @@ dbt = [
     "dbt-duckdb>=1.11,<1.12",
 ]
 dev = [
-    "pytest>=8.4,<9",
-    "pytest-cov>=6.2,<7",
+    "pytest>=8.4,<10",
+    "pytest-cov>=6.2,<8",
     "ruff>=0.13,<1",
-    "mypy>=1.17,<2",
+    "mypy>=1.17,<3",
     "pre-commit>=4.3,<5",
 ]
 
