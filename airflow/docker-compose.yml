@@ -70,8 +70,10 @@ services:
 
   airflow-init:
     <<: *airflow-common
-    entrypoint: /bin/bash
+    # through the image's entrypoint (it accepts bash), which registers an arbitrary AIRFLOW_UID and puts
+    # Airflow's packages on the path; a plain /bin/bash entrypoint fails on CI runners and Linux hosts
     command:
+      - bash
       - -c
       - |
         set -e
