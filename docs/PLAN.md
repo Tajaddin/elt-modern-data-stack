@@ -1,6 +1,6 @@
 # P1 plan: elt-modern-data-stack
 
-Status: plan for approval, 2026-10-17. No code yet. The repository folder exists only to hold this file.
+Status: approved 2026-10-17. Milestones 1 to 4 are done locally (extract and load, dbt project, Airflow with observability and alert tests, CI workflow); the Terraform module, production compose overlay and deploy workflow for milestone 6 are written and validated but not applied. Milestones 5 (hosted warehouses) and 6 (VM) wait for the Databricks, Snowflake and Oracle accounts; milestone 7 (Power BI, seven days of runs) follows the deployment. Decisions taken along the way are in `docs/decisions/`.
 
 ## Goal
 

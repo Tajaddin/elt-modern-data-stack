@@ -1,0 +1,148 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUTF8: "1"
+  UV_SYSTEM_PYTHON: "0"
+
+jobs:
+  lint:
+    name: lint, format, types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --all-extras --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy
+
+  test:
+    name: unit + dbt integration (DuckDB)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --all-extras --frozen
+      - name: pytest with coverage
+        run: uv run pytest --cov --cov-report=xml --cov-report=term --junitxml=pytest.xml
+      - name: coverage summary
+        if: always()
+        run: |
+          uv run python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import xml.etree.ElementTree as ET
+          r = ET.parse("coverage.xml").getroot()
+          print(f"**Line coverage:** {float(r.get('line-rate'))*100:.1f}%  **Branch coverage:** {float(r.get('branch-rate'))*100:.1f}%")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage
+          path: |
+            coverage.xml
+            pytest.xml
+
+  live-source:
+    name: live read from NOAA (network)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --all-extras --frozen
+      - run: uv run pytest -m network --no-cov
+      - name: measure today's window
+        run: uv run ghcn-elt measure | tee measure.json
+      - run: echo "measure: $(cat measure.json)" >> "$GITHUB_STEP_SUMMARY"
+
+  gitleaks:
+    name: secrets scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  alerts:
+    name: Prometheus rules and alert unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker run --rm -v "$PWD/airflow/observability:/t:ro" -w /t --entrypoint promtool prom/prometheus:v3.5.0 check rules /t/alert_rules.yml
+      - run: docker run --rm -v "$PWD/airflow/observability:/t:ro" -w /t --entrypoint promtool prom/prometheus:v3.5.0 test rules /t/alerts_test.yml
+
+  airflow:
+    name: Airflow image, DAG tests, end-to-end run
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: build image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: airflow/Dockerfile
+          tags: ghcn-airflow:local
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: local secrets
+        run: |
+          python3 - <<'PY' > .env
+          import base64, os, secrets
+          print("AIRFLOW_FERNET_KEY=" + base64.urlsafe_b64encode(os.urandom(32)).decode())
+          print("AIRFLOW_JWT_SECRET=" + secrets.token_urlsafe(48))
+          print("AIRFLOW_ADMIN_USER=admin")
+          print("AIRFLOW_ADMIN_PASSWORD=" + secrets.token_urlsafe(16))
+          print("AIRFLOW_DB_PASSWORD=" + secrets.token_urlsafe(16))
+          print("AIRFLOW_UID=" + str(os.getuid()))
+          print("DBT_TARGET=duckdb")
+          print("DBT_SEND_ANONYMOUS_USAGE_STATS=false")
+          PY
+          mkdir -p airflow/logs airflow/config data
+      - name: start Airflow
+        run: docker compose -f airflow/docker-compose.yml --env-file .env up -d --wait --wait-timeout 300 airflow-apiserver airflow-scheduler airflow-dag-processor airflow-triggerer
+      - name: DAG integrity tests
+        run: docker compose -f airflow/docker-compose.yml --env-file .env run --rm airflow-cli python -m pytest /opt/airflow/dag_tests -q -p no:cacheprovider
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --all-extras --frozen
+      - name: end-to-end run through the scheduler (real NOAA read, DuckDB warehouse, Cosmos tasks)
+        run: uv run python scripts/e2e_airflow_run.py --timeout 1500 --poll 20
+      - name: warehouse has marts
+        run: |
+          docker compose -f airflow/docker-compose.yml --env-file .env run --rm airflow-cli python - <<'PY'
+          import duckdb
+          con = duckdb.connect("/opt/airflow/data/warehouse.duckdb", read_only=True)
+          for t in ["raw.ghcn_observations", "main_marts.fct_station_day", "main_marts.dim_station", "main_marts.mart_florida_weather"]:
+              n = con.execute(f"select count(*) from {t}").fetchone()[0]
+              print(t, n)
+              assert n > 0, t
+          PY
+      - name: logs on failure
+        if: failure()
+        run: docker compose -f airflow/docker-compose.yml --env-file .env logs --tail=200
+      - name: tear down
+        if: always()
+        run: docker compose -f airflow/docker-compose.yml --env-file .env down -v

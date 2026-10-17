@@ -1,0 +1,58 @@
+{
+  "title": "GHCN ELT pipeline",
+  "uid": "ghcn-elt",
+  "schemaVersion": 39,
+  "editable": true,
+  "time": { "from": "now-7d", "to": "now" },
+  "refresh": "1m",
+  "panels": [
+    {
+      "type": "stat", "title": "Rows loaded (last run)", "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [{ "expr": "ghcn_rows_loaded", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 } }
+    },
+    {
+      "type": "stat", "title": "Hours since last success", "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [{ "expr": "(time() - max_over_time(timestamp(airflow_dagrun_duration_success_count{dag_id=\"ghcn_daily\"})[30d:1m])) / 3600", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "h", "decimals": 1, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 26 } ] } } }
+    },
+    {
+      "type": "stat", "title": "Task failures (24h)", "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [{ "expr": "sum(increase(airflow_ti_finish{dag_id=\"ghcn_daily\", state=\"failed\"}[24h])) or vector(0)", "refId": "A" }],
+      "fieldConfig": { "defaults": { "decimals": 0, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 1 } ] } } }
+    },
+    {
+      "type": "stat", "title": "Extract seconds (last run)", "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [{ "expr": "ghcn_extract_seconds / 1000", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "s", "decimals": 1 } }
+    },
+    {
+      "type": "timeseries", "title": "DAG run duration (success)", "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [{ "expr": "airflow_dagrun_duration_success{dag_id=\"ghcn_daily\", quantile=\"0.5\"}", "legendFormat": "p50", "refId": "A" },
+                  { "expr": "airflow_dagrun_duration_success{dag_id=\"ghcn_daily\", quantile=\"0.99\"}", "legendFormat": "p99", "refId": "B" }],
+      "fieldConfig": { "defaults": { "unit": "ms" } }
+    },
+    {
+      "type": "timeseries", "title": "Task duration by task", "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [{ "expr": "airflow_task_duration{dag_id=\"ghcn_daily\", quantile=\"0.5\"}", "legendFormat": "{{task_id}}", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "ms" } }
+    },
+    {
+      "type": "timeseries", "title": "Rows extracted per run", "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [{ "expr": "ghcn_rows_extracted", "legendFormat": "rows", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "type": "timeseries", "title": "Scheduler heartbeat rate", "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
+      "datasource": { "uid": "prometheus" },
+      "targets": [{ "expr": "rate(airflow_scheduler_heartbeat[5m])", "legendFormat": "heartbeats/s", "refId": "A" }]
+    }
+  ]
+}

@@ -1,0 +1,245 @@
+# Airflow 3.3 with LocalExecutor, plus an optional observability profile.
+#   cd airflow && docker compose up -d                       # Airflow only
+#   cd airflow && docker compose --profile observability up -d   # + Prometheus, Grafana, Alertmanager, Tempo
+# Secrets come from ../.env (see ../.env.example).
+
+x-airflow-common: &airflow-common
+  build:
+    context: ..
+    dockerfile: airflow/Dockerfile
+  image: ghcn-airflow:local
+  env_file:
+    - ../.env
+  environment: &airflow-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:-}
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:-change-me-in-dot-env}
+    # FAB auth manager: hashed passwords in the metadata database, roles, a real login.
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_DB_PASSWORD:-airflow}@postgres/airflow
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+    AIRFLOW__METRICS__STATSD_ON: ${AIRFLOW_STATSD_ON:-false}
+    AIRFLOW__METRICS__STATSD_HOST: statsd-exporter
+    AIRFLOW__METRICS__STATSD_PORT: "9125"
+    AIRFLOW__METRICS__STATSD_PREFIX: airflow
+    # Airflow's own OTel tracer stays off: with it on, the dag-processor child blocked ~50 s per parse
+    # on this version (3.3.0) and the DAG went stale. The extractor emits its own traces instead.
+    AIRFLOW__TRACES__OTEL_ON: ${AIRFLOW_OTEL_ON:-false}
+    AIRFLOW__TRACES__OTEL_HOST: otel-collector
+    AIRFLOW__TRACES__OTEL_PORT: "4317"
+    AIRFLOW__TRACES__OTEL_SERVICE: ghcn-airflow
+    OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    OTEL_SERVICE_NAME: ghcn-elt
+    GHCN_DATA_DIR: /opt/airflow/data
+    GHCN_DUCKDB_PATH: /opt/airflow/data/warehouse.duckdb
+    DBT_TARGET: ${DBT_TARGET:-duckdb}
+    DBT_PROJECT_DIR: /opt/airflow/dbt
+    DBT_PROFILES_DIR: /opt/airflow/dbt
+    DBT_EXECUTABLE: /opt/dbt-venv/bin/dbt
+    PYTHONUTF8: "1"
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./config:/opt/airflow/config
+    - ./tests:/opt/airflow/dag_tests:ro
+    - ../dbt:/opt/airflow/dbt
+    - ../data:/opt/airflow/data
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on: &airflow-depends
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD:-airflow}
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: always
+
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        set -e
+        mkdir -p /opt/airflow/logs /opt/airflow/data
+        if [ -z "$${AIRFLOW_ADMIN_PASSWORD:-}" ]; then echo "AIRFLOW_ADMIN_PASSWORD is required in .env"; exit 1; fi
+        airflow db migrate
+        airflow fab-db migrate
+        if airflow users list -o plain 2>/dev/null | awk '{print $$2}' | grep -qx "$${AIRFLOW_ADMIN_USER:-admin}"; then
+          airflow users reset-password --username "$${AIRFLOW_ADMIN_USER:-admin}" --password "$$AIRFLOW_ADMIN_PASSWORD" >/dev/null
+          echo "admin password refreshed"
+        else
+          airflow users create --username "$${AIRFLOW_ADMIN_USER:-admin}" --password "$$AIRFLOW_ADMIN_PASSWORD" \
+            --firstname Tajaddin --lastname Gafarov --role Admin --email gafarovtajaddin@gmail.com >/dev/null
+          echo "admin user created"
+        fi
+        airflow pools set duckdb_writer 1 "DuckDB allows one writing process at a time" || true
+        echo "init done"
+    restart: "no"
+
+  airflow-apiserver:
+    <<: *airflow-common
+    command: api-server
+    ports:
+      - "${AIRFLOW_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/version"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      <<: *airflow-depends
+      airflow-init:
+        condition: service_completed_successfully
+    restart: always
+    stop_grace_period: 60s
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      <<: *airflow-depends
+      airflow-init:
+        condition: service_completed_successfully
+    restart: always
+    stop_grace_period: 120s
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      <<: *airflow-depends
+      airflow-init:
+        condition: service_completed_successfully
+    restart: always
+
+  airflow-triggerer:
+    <<: *airflow-common
+    command: triggerer
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type TriggererJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      <<: *airflow-depends
+      airflow-init:
+        condition: service_completed_successfully
+    restart: always
+
+  # One-off commands through the image's own entrypoint, which accepts airflow, bash or python:
+  #   docker compose run --rm airflow-cli airflow dags test ghcn_daily
+  #   docker compose run --rm airflow-cli python -m pytest /opt/airflow/dag_tests -q
+  airflow-cli:
+    <<: *airflow-common
+    profiles: [debug]
+    command: ["airflow", "info"]
+    depends_on:
+      <<: *airflow-depends
+      airflow-init:
+        condition: service_completed_successfully
+
+  # ---------------- observability profile ----------------
+  statsd-exporter:
+    image: prom/statsd-exporter:v0.28.0
+    profiles: [observability]
+    command: ["--statsd.mapping-config=/etc/statsd/mapping.yml", "--statsd.listen-udp=:9125", "--web.listen-address=:9102"]
+    volumes:
+      - ./observability/statsd_mapping.yml:/etc/statsd/mapping.yml:ro
+    ports:
+      - "9102:9102"
+    restart: always
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    profiles: [observability]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=30d
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    restart: always
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    profiles: [observability]
+    command: ["--config.file=/etc/alertmanager/alertmanager.yml"]
+    environment:
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+    volumes:
+      - ./observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    ports:
+      - "9093:9093"
+    restart: always
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.131.0
+    profiles: [observability]
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./observability/otel-collector.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - "4318:4318"
+    restart: always
+
+  tempo:
+    image: grafana/tempo:2.8.1
+    profiles: [observability]
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ./observability/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    restart: always
+
+  grafana:
+    image: grafana/grafana:12.1.1
+    profiles: [observability]
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    restart: always
+
+volumes:
+  postgres-db:
+  prometheus-data:
+  grafana-data:
+  tempo-data:

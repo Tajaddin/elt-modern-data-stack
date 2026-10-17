@@ -1,0 +1,82 @@
+name: deploy
+
+# Deploys main to the VM after CI passes: rsync the repository, write .env from secrets, rebuild and
+# restart the compose stack behind Traefik, then check the public health endpoint.
+on:
+  workflow_run:
+    workflows: [ci]
+    branches: [main]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - name: ssh key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "${{ secrets.VM_HOST }}" >> ~/.ssh/known_hosts
+      - name: sync repository
+        run: |
+          rsync -az --delete \
+            --exclude .git --exclude .venv --exclude data --exclude 'airflow/logs' --exclude '.env' \
+            ./ "ubuntu@${{ secrets.VM_HOST }}:/opt/ghcn/app/"
+      - name: write .env on the VM
+        run: |
+          cat > env.prod <<EOF
+          DOMAIN=${{ secrets.DOMAIN }}
+          ACME_EMAIL=${{ secrets.ACME_EMAIL }}
+          TRAEFIK_BASIC_AUTH=${{ secrets.TRAEFIK_BASIC_AUTH }}
+          AIRFLOW_FERNET_KEY=${{ secrets.AIRFLOW_FERNET_KEY }}
+          AIRFLOW_JWT_SECRET=${{ secrets.AIRFLOW_JWT_SECRET }}
+          AIRFLOW_ADMIN_USER=${{ secrets.AIRFLOW_ADMIN_USER }}
+          AIRFLOW_ADMIN_PASSWORD=${{ secrets.AIRFLOW_ADMIN_PASSWORD }}
+          AIRFLOW_DB_PASSWORD=${{ secrets.AIRFLOW_DB_PASSWORD }}
+          GRAFANA_ADMIN_USER=admin
+          GRAFANA_ADMIN_PASSWORD=${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+          SLACK_WEBHOOK_URL=${{ secrets.SLACK_WEBHOOK_URL }}
+          AIRFLOW_UID=1000
+          AIRFLOW_STATSD_ON=true
+          OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+          DBT_TARGET=${{ vars.DBT_TARGET || 'duckdb' }}
+          DBT_SEND_ANONYMOUS_USAGE_STATS=false
+          DATABRICKS_HOST=${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_HTTP_PATH=${{ secrets.DATABRICKS_HTTP_PATH }}
+          DATABRICKS_TOKEN=${{ secrets.DATABRICKS_TOKEN }}
+          GHCN_DATA_DIR=/opt/airflow/data
+          GHCN_DUCKDB_PATH=/opt/airflow/data/warehouse.duckdb
+          EOF
+          scp env.prod "ubuntu@${{ secrets.VM_HOST }}:/opt/ghcn/app/.env"
+          rm env.prod
+      - name: build and restart the stack
+        run: |
+          ssh "ubuntu@${{ secrets.VM_HOST }}" bash -s <<'EOF'
+          set -euo pipefail
+          cd /opt/ghcn/app
+          mkdir -p airflow/logs data
+          docker compose -f airflow/docker-compose.yml -f airflow/docker-compose.prod.yml --env-file .env \
+            --profile observability up -d --build --remove-orphans --wait --wait-timeout 600
+          docker image prune -f >/dev/null
+          EOF
+      - name: public health check
+        run: |
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "https://airflow.${{ secrets.DOMAIN }}/api/v2/version" || true)
+            [ "$code" = "200" ] && { echo "airflow up ($code)"; exit 0; }
+            sleep 10
+          done
+          echo "airflow did not answer on https://airflow.${{ secrets.DOMAIN }}" >&2
+          exit 1

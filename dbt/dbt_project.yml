@@ -12,6 +12,10 @@ analysis-paths: ["analyses"]
 target-path: "target"
 clean-targets: ["target", "dbt_packages"]
 
+flags:
+  send_anonymous_usage_stats: false
+  require_explicit_package_overrides_for_builtin_materializations: true
+
 vars:
   # Days re-merged on every incremental run; matches GHCN_LOOKBACK_DAYS in the extractor.
   lookback_days: 14

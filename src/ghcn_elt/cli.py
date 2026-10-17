@@ -17,6 +17,7 @@ from ghcn_elt.config import Settings, get_settings
 from ghcn_elt.logging import configure_logging, get_logger
 from ghcn_elt.metrics import RunMetrics, append_metrics
 from ghcn_elt.sources import lookback_window, parse_stations, stations_url
+from ghcn_elt.tracing import configure_tracing, flush_tracing, span
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="GHCN-Daily ELT: extract, load, measure.")
 log = get_logger("ghcn_elt")
@@ -41,16 +42,30 @@ def _setup(json_logs: bool = typer.Option(True, help="JSON logs (default) or con
 
 
 def run_extract(settings: Settings, run_date: date) -> ex.ExtractResult:
+    configure_tracing()
     window = lookback_window(run_date, settings.lookback_days, settings.start_date)
     con = ex.connect(settings.s3_region)
-    result = ex.extract_observations(
-        con,
-        bucket_url=settings.bucket_url,
-        window=window,
-        station_prefix=settings.station_prefix,
-        bronze_dir=settings.bronze_dir,
-        run_date=run_date,
-    )
+    try:
+        with span(
+            "ghcn.extract",
+            run_date=str(run_date),
+            window_start=str(window.start),
+            window_end=str(window.end),
+            station_prefix=settings.station_prefix,
+        ) as s:
+            result = ex.extract_observations(
+                con,
+                bucket_url=settings.bucket_url,
+                window=window,
+                station_prefix=settings.station_prefix,
+                bronze_dir=settings.bronze_dir,
+                run_date=run_date,
+            )
+            s.set_attribute("rows", result.rows)
+            s.set_attribute("bytes", result.bytes_written)
+    finally:
+        con.close()
+        flush_tracing()
     log.info(
         "extract.done",
         run_date=str(run_date),
@@ -66,34 +81,50 @@ def run_extract(settings: Settings, run_date: date) -> ex.ExtractResult:
 
 def run_load(settings: Settings, run_date: date, parquet_path: Path) -> tuple[int, float]:
     settings.duckdb_path.parent.mkdir(parents=True, exist_ok=True)
-    con = ex.connect(settings.s3_region, settings.duckdb_path)
     window = lookback_window(run_date, settings.lookback_days, settings.start_date)
     t0 = time.perf_counter()
-    rows = ld.load_observations(con, parquet_path, _run_id(run_date))
-    ld.record_load_run(
-        con,
-        run_id=_run_id(run_date),
-        run_date=run_date,
-        window_start=window.start,
-        window_end=window.end,
-        rows_loaded=rows,
-    )
+    # Close the connection when done: DuckDB allows one writer per file, and a long-lived
+    # process (Airflow's `dags test`) would otherwise block dbt from opening the warehouse.
+    configure_tracing()
+    con = ex.connect(settings.s3_region, settings.duckdb_path)
+    try:
+        with span("ghcn.load", run_id=_run_id(run_date), target=str(settings.duckdb_path)) as s:
+            rows = ld.load_observations(con, parquet_path, _run_id(run_date))
+            ld.record_load_run(
+                con,
+                run_id=_run_id(run_date),
+                run_date=run_date,
+                window_start=window.start,
+                window_end=window.end,
+                rows_loaded=rows,
+            )
+            s.set_attribute("rows", rows)
+    finally:
+        con.close()
+        flush_tracing()
     seconds = round(time.perf_counter() - t0, 2)
     log.info("load.done", run_date=str(run_date), rows=rows, seconds=seconds, db=str(settings.duckdb_path))
     return rows, seconds
 
 
 def run_stations(settings: Settings, run_date: date) -> int:
+    configure_tracing()
     url = stations_url(settings.http_base_url)
     t0 = time.perf_counter()
-    text = httpx.get(url, timeout=120.0, follow_redirects=True).raise_for_status().text
-    stations = parse_stations(text, prefix=settings.station_prefix)
-    table = ld.stations_to_arrow(stations)
-    out = ex.bronze_path(settings.bronze_dir, "stations", run_date)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    pq.write_table(table, out, compression="zstd")
-    con = ex.connect(settings.s3_region, settings.duckdb_path)
-    rows = ld.load_stations(con, table, _run_id(run_date))
+    with span("ghcn.stations", run_id=_run_id(run_date), url=url) as s:
+        text = httpx.get(url, timeout=120.0, follow_redirects=True).raise_for_status().text
+        stations = parse_stations(text, prefix=settings.station_prefix)
+        table = ld.stations_to_arrow(stations)
+        out = ex.bronze_path(settings.bronze_dir, "stations", run_date)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        pq.write_table(table, out, compression="zstd")
+        con = ex.connect(settings.s3_region, settings.duckdb_path)
+        try:
+            rows = ld.load_stations(con, table, _run_id(run_date))
+        finally:
+            con.close()
+        s.set_attribute("rows", rows)
+    flush_tracing()
     log.info("stations.done", run_date=str(run_date), rows=rows, seconds=round(time.perf_counter() - t0, 2))
     return rows
 

@@ -1,0 +1,42 @@
+groups:
+  - name: ghcn_daily
+    rules:
+      - alert: GhcnDailyNoSuccessIn26h
+        # The DAG runs daily at 07:00 UTC; no successful run for 26 hours means it failed or never ran.
+        expr: |
+          (time() - max_over_time(timestamp(airflow_dagrun_duration_success_count{dag_id="ghcn_daily"})[30d:1m]) > 26 * 3600)
+          or
+          (absent(airflow_dagrun_duration_success_count{dag_id="ghcn_daily"}) and (time() - process_start_time_seconds{job="prometheus"}) > 26 * 3600)
+        for: 15m
+        labels:
+          severity: page
+        annotations:
+          summary: "ghcn_daily has not succeeded in 26 hours"
+          description: "Last successful DAG run is older than 26 hours (or none since Prometheus started)."
+
+      - alert: GhcnDailyTaskFailed
+        expr: increase(airflow_ti_finish{dag_id="ghcn_daily", state="failed"}[2h]) > 0
+        for: 1m
+        labels:
+          severity: warn
+        annotations:
+          summary: "A ghcn_daily task failed"
+          description: "At least one task instance of ghcn_daily finished in state failed in the last 2 hours (retries may still succeed)."
+
+      - alert: GhcnRowsLoadedDropped
+        # The 14-day US window is normally several hundred thousand rows; a tiny load means a broken extract.
+        expr: ghcn_rows_loaded < 50000
+        for: 5m
+        labels:
+          severity: warn
+        annotations:
+          summary: "ghcn_daily loaded suspiciously few rows"
+          description: "Last run loaded {{ $value }} rows; the US 14-day window is normally 500K+."
+
+      - alert: AirflowSchedulerDown
+        expr: absent(airflow_scheduler_heartbeat) or rate(airflow_scheduler_heartbeat[5m]) == 0
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "Airflow scheduler heartbeat missing"

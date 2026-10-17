@@ -14,6 +14,8 @@ dependencies = [
     "pydantic-settings>=2.10,<3",
     "structlog>=25.4,<26",
     "typer>=0.17,<1",
+    "opentelemetry-sdk>=1.36,<2",
+    "opentelemetry-exporter-otlp-proto-http>=1.36,<2",
 ]
 
 [project.optional-dependencies]
@@ -50,6 +52,9 @@ ignore = ["S101", "PLR2004", "S608", "PLR0913"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S", "PLR", "E501"]
+"airflow/tests/**" = ["S", "PLR", "E501", "PLC0415"]
+# Airflow tasks import inside the function on purpose: the dag-processor parses files constantly.
+"airflow/dags/**" = ["PLC0415"]
 
 [tool.mypy]
 python_version = "3.12"

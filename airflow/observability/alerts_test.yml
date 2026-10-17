@@ -1,0 +1,59 @@
+# promtool unit tests for alert_rules.yml. Run: make alerts-test (uses the prom/prometheus image).
+rule_files:
+  - alert_rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  # A task failure increments the failed counter: GhcnDailyTaskFailed fires.
+  - interval: 1m
+    input_series:
+      - series: 'airflow_ti_finish{dag_id="ghcn_daily", task_id="extract_and_load", state="failed"}'
+        values: "0 0 0 1 1 1 1 1"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: GhcnDailyTaskFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warn
+              dag_id: ghcn_daily
+              task_id: extract_and_load
+              state: failed
+            exp_annotations:
+              summary: "A ghcn_daily task failed"
+              description: "At least one task instance of ghcn_daily finished in state failed in the last 2 hours (retries may still succeed)."
+
+  # A tiny load fires GhcnRowsLoadedDropped; a normal load does not.
+  - interval: 1m
+    input_series:
+      - series: "ghcn_rows_loaded"
+        values: "659929 659929 659929 120 120 120 120 120 120"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: GhcnRowsLoadedDropped
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: GhcnRowsLoadedDropped
+        exp_alerts:
+          - exp_labels:
+              severity: warn
+            exp_annotations:
+              summary: "ghcn_daily loaded suspiciously few rows"
+              description: "Last run loaded 120 rows; the US 14-day window is normally 500K+."
+
+  # Scheduler heartbeat stops: AirflowSchedulerDown fires after 5 minutes.
+  - interval: 1m
+    input_series:
+      - series: "airflow_scheduler_heartbeat"
+        values: "1 2 3 4 5 6 6 6 6 6 6 6 6 6"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: AirflowSchedulerDown
+        exp_alerts: []
+      - eval_time: 16m
+        alertname: AirflowSchedulerDown
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "Airflow scheduler heartbeat missing"

@@ -40,3 +40,10 @@ terraform.tfstate*
 .vscode/
 .DS_Store
 Thumbs.db
+
+# dbt user id (anonymous telemetry); telemetry is disabled in dbt_project.yml anyway
+dbt/.user.yml
+
+# airflow local state (passwords.json holds the admin password)
+airflow/config/
+airflow/logs/

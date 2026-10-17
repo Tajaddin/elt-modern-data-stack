@@ -1,0 +1,15 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: default
+  group_by: [alertname, dag_id]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 12h
+
+receivers:
+  # Slack is configured by the deploy step, which renders SLACK_WEBHOOK_URL into this file
+  # (Alertmanager does not expand environment variables). Without it, alerts stay visible
+  # in the Alertmanager and Grafana UIs.
+  - name: default

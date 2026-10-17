@@ -1,0 +1,8 @@
+# Copy to terraform.tfvars (gitignored) and fill in. All values come from the OCI console.
+tenancy_ocid     = "ocid1.tenancy.oc1..xxxx"
+user_ocid        = "ocid1.user.oc1..xxxx"
+fingerprint      = "aa:bb:cc:..."
+private_key_path = "~/.oci/oci_api_key.pem"
+region           = "us-ashburn-1"
+compartment_ocid = "ocid1.tenancy.oc1..xxxx" # root compartment is fine for a personal tenancy
+ssh_public_key   = "ssh-ed25519 AAAA... you@laptop"

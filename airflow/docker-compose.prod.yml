@@ -1,0 +1,91 @@
+# Production overlay for the VM: Traefik terminates TLS (Let's Encrypt, HTTP challenge), rate-limits every
+# host, and puts basic auth in front of the services that have no login of their own.
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile observability up -d --build
+# Needs in .env: DOMAIN (e.g. ghcn.duckdns.org), ACME_EMAIL, TRAEFIK_BASIC_AUTH (htpasswd line, $ escaped as $$).
+
+services:
+  traefik:
+    image: traefik:v3.4
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.le.acme.email=${ACME_EMAIL}
+      - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
+      - --certificatesresolvers.le.acme.httpchallenge.entrypoint=web
+      - --accesslog=true
+      - --accesslog.format=json
+      - --log.level=INFO
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik-letsencrypt:/letsencrypt
+    restart: always
+    labels:
+      # shared middlewares
+      - traefik.enable=true
+      - traefik.http.middlewares.ratelimit.ratelimit.average=50
+      - traefik.http.middlewares.ratelimit.ratelimit.burst=100
+      - traefik.http.middlewares.secure-headers.headers.stsSeconds=31536000
+      - traefik.http.middlewares.secure-headers.headers.stsIncludeSubdomains=true
+      - traefik.http.middlewares.secure-headers.headers.frameDeny=true
+      - traefik.http.middlewares.secure-headers.headers.contentTypeNosniff=true
+      - traefik.http.middlewares.ops-auth.basicauth.users=${TRAEFIK_BASIC_AUTH}
+
+  airflow-apiserver:
+    ports: !reset []
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.airflow.rule=Host(`airflow.${DOMAIN}`)
+      - traefik.http.routers.airflow.entrypoints=websecure
+      - traefik.http.routers.airflow.tls.certresolver=le
+      - traefik.http.routers.airflow.middlewares=ratelimit,secure-headers
+      - traefik.http.services.airflow.loadbalancer.server.port=8080
+    environment:
+      AIRFLOW__API__BASE_URL: https://airflow.${DOMAIN}
+      AIRFLOW__API__ENABLE_PROXY_FIX: "true"
+
+  grafana:
+    ports: !reset []
+    environment:
+      GF_SERVER_ROOT_URL: https://grafana.${DOMAIN}
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.grafana.rule=Host(`grafana.${DOMAIN}`)
+      - traefik.http.routers.grafana.entrypoints=websecure
+      - traefik.http.routers.grafana.tls.certresolver=le
+      - traefik.http.routers.grafana.middlewares=ratelimit,secure-headers
+      - traefik.http.services.grafana.loadbalancer.server.port=3000
+
+  prometheus:
+    ports: !reset []
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.prometheus.rule=Host(`prometheus.${DOMAIN}`)
+      - traefik.http.routers.prometheus.entrypoints=websecure
+      - traefik.http.routers.prometheus.tls.certresolver=le
+      - traefik.http.routers.prometheus.middlewares=ratelimit,secure-headers,ops-auth
+      - traefik.http.services.prometheus.loadbalancer.server.port=9090
+
+  alertmanager:
+    ports: !reset []
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.alertmanager.rule=Host(`alertmanager.${DOMAIN}`)
+      - traefik.http.routers.alertmanager.entrypoints=websecure
+      - traefik.http.routers.alertmanager.tls.certresolver=le
+      - traefik.http.routers.alertmanager.middlewares=ratelimit,secure-headers,ops-auth
+      - traefik.http.services.alertmanager.loadbalancer.server.port=9093
+
+  statsd-exporter:
+    ports: !reset []
+  otel-collector:
+    ports: !reset []
+
+volumes:
+  traefik-letsencrypt:
