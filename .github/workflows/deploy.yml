@@ -1,7 +1,8 @@
 name: deploy
 
 # Deploys main to the VM after CI passes: rsync the repository, write .env from secrets, rebuild and
-# restart the compose stack behind Traefik, then check the public health endpoint.
+# restart the compose stack behind Traefik, then check the public health endpoint. Automatic deploys stay
+# off until the repository variable DEPLOY_ENABLED is true; a manual run always goes ahead.
 on:
   workflow_run:
     workflows: [ci]
@@ -18,7 +19,7 @@ concurrency:
 
 jobs:
   deploy:
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || (vars.DEPLOY_ENABLED == 'true' && github.event.workflow_run.conclusion == 'success') }}
     runs-on: ubuntu-latest
     environment: production
     steps:

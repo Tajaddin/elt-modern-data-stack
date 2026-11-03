@@ -16,7 +16,7 @@ Ampere A1 tier: $0.
    `AIRFLOW_FERNET_KEY`, `AIRFLOW_JWT_SECRET`, `AIRFLOW_ADMIN_USER`, `AIRFLOW_ADMIN_PASSWORD`,
    `AIRFLOW_DB_PASSWORD`, `GRAFANA_ADMIN_PASSWORD`, optionally `SLACK_WEBHOOK_URL` and the
    `DATABRICKS_*` values. Repository variable `DBT_TARGET` selects the warehouse (`duckdb` by default).
-5. **First deploy**: Actions > deploy > Run workflow. Later deploys happen automatically after CI succeeds on `main`.
+5. **First deploy**: Actions > deploy > Run workflow. Then set the repository variable `DEPLOY_ENABLED` to `true`, and later deploys happen automatically after CI succeeds on `main`.
 
 ## Day to day
 
