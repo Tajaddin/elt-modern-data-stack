@@ -19,17 +19,38 @@ concurrency:
 
 jobs:
   deploy:
-    if: ${{ github.event_name == 'workflow_dispatch' || (vars.DEPLOY_ENABLED == 'true' && github.event.workflow_run.conclusion == 'success') }}
+    # A workflow_run event also fires for CI runs on pull requests, including ones from forks whose head branch
+    # happens to be called main; only a successful CI run on a push to this repository may deploy.
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' || (vars.DEPLOY_ENABLED == 'true'
+      && github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.event == 'push'
+      && github.event.workflow_run.head_repository.full_name == github.repository) }}
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - uses: actions/checkout@v4
+      # Deploy the commit CI tested, not whatever main points at by the time this job starts.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
       - name: ssh key
+        env:
+          VM_SSH_KEY: ${{ secrets.VM_SSH_KEY }}
+          VM_HOST: ${{ secrets.VM_HOST }}
+          VM_KNOWN_HOSTS: ${{ secrets.VM_KNOWN_HOSTS }}
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/id_ed25519
+          printf '%s\n' "$VM_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H "${{ secrets.VM_HOST }}" >> ~/.ssh/known_hosts
+          # Prefer the host key recorded when the VM was created (`ssh-keyscan -H <host>` run once, stored as the
+          # VM_KNOWN_HOSTS secret); scanning on every deploy trusts whatever answers on that address.
+          if [ -n "$VM_KNOWN_HOSTS" ]; then
+            printf '%s\n' "$VM_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          else
+            echo "::warning::VM_KNOWN_HOSTS is not set; trusting the host key presented on first use"
+            ssh-keyscan -H "$VM_HOST" >> ~/.ssh/known_hosts
+          fi
       - name: sync repository
         run: |
           rsync -az --delete \
