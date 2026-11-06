@@ -3,7 +3,7 @@ version: 2
 models:
   - name: fct_station_day
     description: >-
-      Incremental station-day fact; each run re-merges the days it loaded (vars window_start and
+      Incremental station-day fact; each run rebuilds the days it loaded (vars window_start and
       window_end) or, without them, the last lookback_days days the table holds.
     tests:
       - unique_combination:

@@ -152,8 +152,14 @@ def test_dbt_build_is_green_and_idempotent(tmp_path: Path) -> None:
 TAMPA = "USW00012842"
 
 
-def _load_days(con: duckdb.DuckDBPyConnection, tmp_path: Path, run_id: str, days: list[date]) -> None:
-    """Load one run holding a TMAX and a TMIN for TAMPA on each day."""
+def _load_days(
+    con: duckdb.DuckDBPyConnection,
+    tmp_path: Path,
+    run_id: str,
+    days: list[date],
+    flagged: frozenset[date] = frozenset(),
+) -> None:
+    """Load one run holding a TMAX and a TMIN for TAMPA on each day; days in `flagged` fail NOAA's checks."""
     rows = [(d, element, value) for d in days for element, value in (("TMAX", 300), ("TMIN", 200))]
     table = pa.table(
         {
@@ -162,7 +168,7 @@ def _load_days(con: duckdb.DuckDBPyConnection, tmp_path: Path, run_id: str, days
             "element": [r[1] for r in rows],
             "data_value": pa.array([r[2] for r in rows], pa.int32()),
             "m_flag": pa.nulls(len(rows), pa.string()),
-            "q_flag": pa.nulls(len(rows), pa.string()),
+            "q_flag": pa.array(["X" if r[0] in flagged else None for r in rows], pa.string()),
             "s_flag": pa.array(["7"] * len(rows), pa.string()),
             "obs_time": pa.nulls(len(rows), pa.string()),
         }
@@ -204,3 +210,26 @@ def test_backfilled_days_reach_the_fact_through_the_run_window(tmp_path: Path) -
     )
 
     assert _fact_days(db) == [date(2026, 9, 30), date(2026, 10, 1), date(2026, 10, 20), date(2026, 10, 21)]
+
+
+def test_a_station_day_noaa_flags_in_full_leaves_the_fact(tmp_path: Path) -> None:
+    db = tmp_path / "wh.duckdb"
+    con = duckdb.connect(str(db))
+    _load_days(con, tmp_path, "ghcn_daily__2026-10-20", [date(2026, 10, 19), date(2026, 10, 20)])
+    con.close()
+    _dbt(db, "run", "--select", "+fct_station_day")
+    assert _fact_days(db) == [date(2026, 10, 19), date(2026, 10, 20)]
+
+    # The next run re-reads the window, and NOAA has since flagged both elements of 2026-10-19.
+    con = duckdb.connect(str(db))
+    _load_days(
+        con,
+        tmp_path,
+        "ghcn_daily__2026-10-21",
+        [date(2026, 10, 19), date(2026, 10, 20), date(2026, 10, 21)],
+        flagged=frozenset({date(2026, 10, 19)}),
+    )
+    con.close()
+    _dbt(db, "run", "--select", "+fct_station_day")
+
+    assert _fact_days(db) == [date(2026, 10, 20), date(2026, 10, 21)]
