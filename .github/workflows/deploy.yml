@@ -56,32 +56,47 @@ jobs:
           rsync -az --delete \
             --exclude .git --exclude .venv --exclude data --exclude 'airflow/logs' --exclude '.env' \
             ./ "ubuntu@${{ secrets.VM_HOST }}:/opt/ghcn/app/"
-      - name: write .env on the VM
+      # Every value reaches the file through the environment and printf, never through the shell parser:
+      # htpasswd hashes ($ written as $$) and generated secrets contain $, which a heredoc would expand.
+      # tests/unit/test_deploy_workflow.py runs this step with such values.
+      - name: write .env
+        env:
+          DOMAIN: ${{ secrets.DOMAIN }}
+          ACME_EMAIL: ${{ secrets.ACME_EMAIL }}
+          TRAEFIK_BASIC_AUTH: ${{ secrets.TRAEFIK_BASIC_AUTH }}
+          AIRFLOW_FERNET_KEY: ${{ secrets.AIRFLOW_FERNET_KEY }}
+          AIRFLOW_JWT_SECRET: ${{ secrets.AIRFLOW_JWT_SECRET }}
+          AIRFLOW_ADMIN_USER: ${{ secrets.AIRFLOW_ADMIN_USER }}
+          AIRFLOW_ADMIN_PASSWORD: ${{ secrets.AIRFLOW_ADMIN_PASSWORD }}
+          AIRFLOW_DB_PASSWORD: ${{ secrets.AIRFLOW_DB_PASSWORD }}
+          GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          DBT_TARGET: ${{ vars.DBT_TARGET || 'duckdb' }}
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_HTTP_PATH: ${{ secrets.DATABRICKS_HTTP_PATH }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
         run: |
-          cat > env.prod <<EOF
-          DOMAIN=${{ secrets.DOMAIN }}
-          ACME_EMAIL=${{ secrets.ACME_EMAIL }}
-          TRAEFIK_BASIC_AUTH=${{ secrets.TRAEFIK_BASIC_AUTH }}
-          AIRFLOW_FERNET_KEY=${{ secrets.AIRFLOW_FERNET_KEY }}
-          AIRFLOW_JWT_SECRET=${{ secrets.AIRFLOW_JWT_SECRET }}
-          AIRFLOW_ADMIN_USER=${{ secrets.AIRFLOW_ADMIN_USER }}
-          AIRFLOW_ADMIN_PASSWORD=${{ secrets.AIRFLOW_ADMIN_PASSWORD }}
-          AIRFLOW_DB_PASSWORD=${{ secrets.AIRFLOW_DB_PASSWORD }}
+          {
+            for name in DOMAIN ACME_EMAIL TRAEFIK_BASIC_AUTH AIRFLOW_FERNET_KEY AIRFLOW_JWT_SECRET \
+              AIRFLOW_ADMIN_USER AIRFLOW_ADMIN_PASSWORD AIRFLOW_DB_PASSWORD GRAFANA_ADMIN_PASSWORD \
+              SLACK_WEBHOOK_URL DBT_TARGET DATABRICKS_HOST DATABRICKS_HTTP_PATH DATABRICKS_TOKEN; do
+              printf '%s=%s\n' "$name" "${!name}"
+            done
+            cat <<'EOF'
           GRAFANA_ADMIN_USER=admin
-          GRAFANA_ADMIN_PASSWORD=${{ secrets.GRAFANA_ADMIN_PASSWORD }}
-          SLACK_WEBHOOK_URL=${{ secrets.SLACK_WEBHOOK_URL }}
           AIRFLOW_UID=1000
           AIRFLOW_STATSD_ON=true
           OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
-          DBT_TARGET=${{ vars.DBT_TARGET || 'duckdb' }}
           DBT_SEND_ANONYMOUS_USAGE_STATS=false
-          DATABRICKS_HOST=${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_HTTP_PATH=${{ secrets.DATABRICKS_HTTP_PATH }}
-          DATABRICKS_TOKEN=${{ secrets.DATABRICKS_TOKEN }}
           GHCN_DATA_DIR=/opt/airflow/data
           GHCN_DUCKDB_PATH=/opt/airflow/data/warehouse.duckdb
           EOF
-          scp env.prod "ubuntu@${{ secrets.VM_HOST }}:/opt/ghcn/app/.env"
+          } > env.prod
+      - name: copy .env to the VM
+        env:
+          VM_HOST: ${{ secrets.VM_HOST }}
+        run: |
+          scp env.prod "ubuntu@$VM_HOST:/opt/ghcn/app/.env"
           rm env.prod
       - name: build and restart the stack
         run: |
