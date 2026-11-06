@@ -19,6 +19,11 @@ flags:
 vars:
   # Days re-merged on every incremental run; matches GHCN_LOOKBACK_DAYS in the extractor.
   lookback_days: 14
+  # Days an incremental build of fct_station_day re-merges, inclusive. A run that knows which days it
+  # loaded sets them (the Airflow DAG passes its extract window), so backfilled days reach the fact.
+  # Unset, the build re-merges the last lookback_days days the fact already holds.
+  window_start: null
+  window_end: null
   # Volume drift test: the latest run's row count must be within this factor of the median of previous runs.
   volume_band_factor: 3
 

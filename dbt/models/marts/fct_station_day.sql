@@ -7,7 +7,8 @@
     )
 }}
 
--- Station-day fact. Incremental: each run re-merges the lookback window so late NOAA revisions land.
+-- Station-day fact. Incremental: each run re-merges a window of days so late NOAA revisions land; the
+-- window comes from the run (vars window_start, window_end) or is the last lookback_days days held.
 select
     station_id,
     obs_date,
@@ -24,8 +25,16 @@ select
 from {{ ref('int_station_day') }}
 
 {% if is_incremental() %}
-where obs_date >= (
-    select {{ dbt.dateadd('day', -var('lookback_days'), "coalesce(max(obs_date), cast('1900-01-01' as date))") }}
-    from {{ this }}
-)
+where
+    {% if var('window_start') is none -%}
+    obs_date >= (
+        select {{ dbt.dateadd('day', -var('lookback_days'), "coalesce(max(obs_date), cast('1900-01-01' as date))") }}
+        from {{ this }}
+    )
+    {%- else -%}
+    obs_date >= cast('{{ var("window_start") }}' as date)
+    {%- endif %}
+    {%- if var('window_end') is not none %}
+    and obs_date <= cast('{{ var("window_end") }}' as date)
+    {%- endif %}
 {% endif %}

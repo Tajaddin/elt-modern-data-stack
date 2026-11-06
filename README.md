@@ -44,10 +44,11 @@ cd dbt && DBT_PROFILES_DIR=. uv run dbt build && cd ..   # staging, marts, snaps
 
 `data/warehouse.duckdb` now holds `raw.*` and `main_marts.*`; `data/metrics/extract_runs.jsonl` holds one line per run.
 
-Backfill a range (each day re-reads its own 14-day window, so reruns are safe):
+Backfill a range (each day re-reads its own 14-day window, so reruns are safe), then rebuild those days in dbt. Without the vars an incremental build re-merges only the last 14 days the fact already holds, so older days would stop at staging; under Airflow every run passes the window it extracted.
 
 ```bash
 for d in 2026-10-01 2026-10-02; do uv run ghcn-elt run --run-date "$d"; done
+cd dbt && DBT_PROFILES_DIR=. uv run dbt build --vars '{window_start: 2026-09-17, window_end: 2026-10-02}' && cd ..
 ```
 
 ### Airflow
