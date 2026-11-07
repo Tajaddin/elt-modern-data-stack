@@ -3,11 +3,14 @@
         materialized='incremental',
         unique_key=['station_id', 'obs_date'],
         incremental_strategy=('merge' if target.type in ('databricks', 'snowflake') else 'delete+insert'),
-        on_schema_change='append_new_columns'
+        on_schema_change='append_new_columns',
+        pre_hook="{% if is_incremental() %}delete from {{ this }} where {{ station_day_window() }}{% endif %}"
     )
 }}
 
--- Station-day fact. Incremental: each run re-merges the lookback window so late NOAA revisions land.
+-- Station-day fact. Incremental: each run rebuilds a window of days (macros/station_day_window.sql). The
+-- pre-hook deletes the window and the select fills it again, so late NOAA revisions land and a station-day
+-- whose every element NOAA has since flagged drops out instead of keeping its old values.
 select
     station_id,
     obs_date,
@@ -24,8 +27,5 @@ select
 from {{ ref('int_station_day') }}
 
 {% if is_incremental() %}
-where obs_date >= (
-    select {{ dbt.dateadd('day', -var('lookback_days'), "coalesce(max(obs_date), cast('1900-01-01' as date))") }}
-    from {{ this }}
-)
+where {{ station_day_window() }}
 {% endif %}

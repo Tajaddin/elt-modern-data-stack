@@ -53,6 +53,16 @@ def test_duckdb_tasks_share_the_single_writer_pool(dagbag) -> None:  # type: ign
     assert dag.get_task("record_run").pool != "duckdb_writer"
 
 
+def test_dbt_tasks_get_the_window_the_run_extracted(dagbag) -> None:  # type: ignore[no-untyped-def]
+    dag = dagbag.get_dag("ghcn_daily")
+    dbt_tasks = [t for t in dag.tasks if t.task_id.startswith("dbt_build.")]
+    assert dbt_tasks
+    for t in dbt_tasks:
+        assert "vars" in t.template_fields, t.task_id
+        for key in ("window_start", "window_end"):
+            assert "xcom_pull(task_ids='extract_and_load')" in t.vars[key], (t.task_id, key)
+
+
 def test_failure_message_formats_without_airflow_objects() -> None:
     from ghcn_elt.alerts import build_failure_message
 

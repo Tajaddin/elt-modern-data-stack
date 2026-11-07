@@ -31,6 +31,13 @@ DBT_TARGET = os.environ.get("DBT_TARGET", "duckdb")
 # warehouse (the two Python loads and each Cosmos dbt task) runs through a one-slot pool.
 WRITER_POOL = {"pool": "duckdb_writer"} if DBT_TARGET == "duckdb" else {}
 
+# dbt re-merges into fct_station_day exactly the days this run's extract read, so a backfilled date reaches
+# the fact instead of stopping in raw and staging.
+DBT_WINDOW_VARS = {
+    "window_start": "{{ ti.xcom_pull(task_ids='extract_and_load')['window_start'] }}",
+    "window_end": "{{ ti.xcom_pull(task_ids='extract_and_load')['window_end'] }}",
+}
+
 default_args = {
     "owner": "tajaddin",
     "retries": 2,
@@ -112,7 +119,8 @@ def ghcn_daily() -> None:
         # (a running task may hold its write lock) and never shells out to dbt.
         render_config=RenderConfig(test_behavior=TestBehavior.AFTER_EACH, load_method=LoadMode.CUSTOM),
         # DuckDB accepts one writing process at a time; the pool serialises Cosmos' per-model tasks.
-        operator_args=dict(WRITER_POOL),
+        # vars is a templated field, rendered per task from the extract's XCom.
+        operator_args={**WRITER_POOL, "vars": DBT_WINDOW_VARS},
         default_args={"retries": 1},
     )
 

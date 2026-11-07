@@ -19,48 +19,84 @@ concurrency:
 
 jobs:
   deploy:
-    if: ${{ github.event_name == 'workflow_dispatch' || (vars.DEPLOY_ENABLED == 'true' && github.event.workflow_run.conclusion == 'success') }}
+    # A workflow_run event also fires for CI runs on pull requests, including ones from forks whose head branch
+    # happens to be called main; only a successful CI run on a push to this repository may deploy.
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' || (vars.DEPLOY_ENABLED == 'true'
+      && github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.event == 'push'
+      && github.event.workflow_run.head_repository.full_name == github.repository) }}
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - uses: actions/checkout@v4
+      # Deploy the commit CI tested, not whatever main points at by the time this job starts.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
       - name: ssh key
+        env:
+          VM_SSH_KEY: ${{ secrets.VM_SSH_KEY }}
+          VM_HOST: ${{ secrets.VM_HOST }}
+          VM_KNOWN_HOSTS: ${{ secrets.VM_KNOWN_HOSTS }}
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.VM_SSH_KEY }}" > ~/.ssh/id_ed25519
+          printf '%s\n' "$VM_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H "${{ secrets.VM_HOST }}" >> ~/.ssh/known_hosts
+          # Prefer the host key recorded when the VM was created (`ssh-keyscan -H <host>` run once, stored as the
+          # VM_KNOWN_HOSTS secret); scanning on every deploy trusts whatever answers on that address.
+          if [ -n "$VM_KNOWN_HOSTS" ]; then
+            printf '%s\n' "$VM_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          else
+            echo "::warning::VM_KNOWN_HOSTS is not set; trusting the host key presented on first use"
+            ssh-keyscan -H "$VM_HOST" >> ~/.ssh/known_hosts
+          fi
       - name: sync repository
         run: |
           rsync -az --delete \
             --exclude .git --exclude .venv --exclude data --exclude 'airflow/logs' --exclude '.env' \
             ./ "ubuntu@${{ secrets.VM_HOST }}:/opt/ghcn/app/"
-      - name: write .env on the VM
+      # Every value reaches the file through the environment and printf, never through the shell parser:
+      # htpasswd hashes ($ written as $$) and generated secrets contain $, which a heredoc would expand.
+      # tests/unit/test_deploy_workflow.py runs this step with such values.
+      - name: write .env
+        env:
+          DOMAIN: ${{ secrets.DOMAIN }}
+          ACME_EMAIL: ${{ secrets.ACME_EMAIL }}
+          TRAEFIK_BASIC_AUTH: ${{ secrets.TRAEFIK_BASIC_AUTH }}
+          AIRFLOW_FERNET_KEY: ${{ secrets.AIRFLOW_FERNET_KEY }}
+          AIRFLOW_JWT_SECRET: ${{ secrets.AIRFLOW_JWT_SECRET }}
+          AIRFLOW_ADMIN_USER: ${{ secrets.AIRFLOW_ADMIN_USER }}
+          AIRFLOW_ADMIN_PASSWORD: ${{ secrets.AIRFLOW_ADMIN_PASSWORD }}
+          AIRFLOW_DB_PASSWORD: ${{ secrets.AIRFLOW_DB_PASSWORD }}
+          GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          DBT_TARGET: ${{ vars.DBT_TARGET || 'duckdb' }}
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_HTTP_PATH: ${{ secrets.DATABRICKS_HTTP_PATH }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
         run: |
-          cat > env.prod <<EOF
-          DOMAIN=${{ secrets.DOMAIN }}
-          ACME_EMAIL=${{ secrets.ACME_EMAIL }}
-          TRAEFIK_BASIC_AUTH=${{ secrets.TRAEFIK_BASIC_AUTH }}
-          AIRFLOW_FERNET_KEY=${{ secrets.AIRFLOW_FERNET_KEY }}
-          AIRFLOW_JWT_SECRET=${{ secrets.AIRFLOW_JWT_SECRET }}
-          AIRFLOW_ADMIN_USER=${{ secrets.AIRFLOW_ADMIN_USER }}
-          AIRFLOW_ADMIN_PASSWORD=${{ secrets.AIRFLOW_ADMIN_PASSWORD }}
-          AIRFLOW_DB_PASSWORD=${{ secrets.AIRFLOW_DB_PASSWORD }}
+          {
+            for name in DOMAIN ACME_EMAIL TRAEFIK_BASIC_AUTH AIRFLOW_FERNET_KEY AIRFLOW_JWT_SECRET \
+              AIRFLOW_ADMIN_USER AIRFLOW_ADMIN_PASSWORD AIRFLOW_DB_PASSWORD GRAFANA_ADMIN_PASSWORD \
+              SLACK_WEBHOOK_URL DBT_TARGET DATABRICKS_HOST DATABRICKS_HTTP_PATH DATABRICKS_TOKEN; do
+              printf '%s=%s\n' "$name" "${!name}"
+            done
+            cat <<'EOF'
           GRAFANA_ADMIN_USER=admin
-          GRAFANA_ADMIN_PASSWORD=${{ secrets.GRAFANA_ADMIN_PASSWORD }}
-          SLACK_WEBHOOK_URL=${{ secrets.SLACK_WEBHOOK_URL }}
           AIRFLOW_UID=1000
           AIRFLOW_STATSD_ON=true
           OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
-          DBT_TARGET=${{ vars.DBT_TARGET || 'duckdb' }}
           DBT_SEND_ANONYMOUS_USAGE_STATS=false
-          DATABRICKS_HOST=${{ secrets.DATABRICKS_HOST }}
-          DATABRICKS_HTTP_PATH=${{ secrets.DATABRICKS_HTTP_PATH }}
-          DATABRICKS_TOKEN=${{ secrets.DATABRICKS_TOKEN }}
           GHCN_DATA_DIR=/opt/airflow/data
           GHCN_DUCKDB_PATH=/opt/airflow/data/warehouse.duckdb
           EOF
-          scp env.prod "ubuntu@${{ secrets.VM_HOST }}:/opt/ghcn/app/.env"
+          } > env.prod
+      - name: copy .env to the VM
+        env:
+          VM_HOST: ${{ secrets.VM_HOST }}
+        run: |
+          scp env.prod "ubuntu@$VM_HOST:/opt/ghcn/app/.env"
           rm env.prod
       - name: build and restart the stack
         run: |

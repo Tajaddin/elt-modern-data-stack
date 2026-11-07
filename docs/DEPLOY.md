@@ -11,7 +11,9 @@ Ampere A1 tier: $0.
 2. **Create the VM**: `make deploy` (runs `terraform init && terraform apply` in `infra/oci`). The output prints the public IP. If Oracle reports "Out of capacity" for the A1 shape, retry later or pick another availability domain (`availability_domains[1]` in `main.tf`).
 3. **DNS**: point `airflow.<domain>`, `grafana.<domain>`, `prometheus.<domain>` and `alertmanager.<domain>` at that IP. A free DuckDNS name works: `yourname.duckdns.org` resolves all its subdomains to the same address.
 4. **GitHub secrets** (repository > Settings > Environments > `production`):
-   `VM_HOST`, `VM_SSH_KEY` (private key matching `ssh_public_key`), `DOMAIN`, `ACME_EMAIL`,
+   `VM_HOST`, `VM_SSH_KEY` (private key matching `ssh_public_key`), `VM_KNOWN_HOSTS` (output of
+   `ssh-keyscan -H <ip>` run once after the VM is created; without it every deploy trusts the host key
+   it is shown), `DOMAIN`, `ACME_EMAIL`,
    `TRAEFIK_BASIC_AUTH` (output of `htpasswd -nB admin`, with every `$` doubled),
    `AIRFLOW_FERNET_KEY`, `AIRFLOW_JWT_SECRET`, `AIRFLOW_ADMIN_USER`, `AIRFLOW_ADMIN_PASSWORD`,
    `AIRFLOW_DB_PASSWORD`, `GRAFANA_ADMIN_PASSWORD`, optionally `SLACK_WEBHOOK_URL` and the
